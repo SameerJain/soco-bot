@@ -26,12 +26,23 @@ The workflow runs daily, but the bot only posts if 2 days have passed since the 
 
 ## Customizing
 
-Everything lives at the top of `soco_bot.py`:
+Everything you'd normally change lives in `settings.py`:
 
 - `SOURCES` holds the feeds: `(name, url, weight, focused)`. A higher weight means the source is preferred. `focused=True` means the outlet doesn't need to match keywords.
 - `TECH`, `SOCIETY`, and `SKIP` are the keyword regexes.
 - `POST_EVERY` sets how often the bot posts.
 - `BUZZ_CHECK` sets how many top stories get the popularity check.
+
+The rest of the code is split up by job:
+
+| File | What it does |
+|---|---|
+| `soco_bot.py` | Starts the bot: checks if a post is due, picks a story, posts it, and saves the history |
+| `settings.py` | Outlets, keywords, and timing |
+| `feeds.py` | Reads the RSS feeds and cleans up the text |
+| `ranking.py` | Scores stories and picks the best one (topic, freshness, Hacker News, other outlets) |
+| `pictures.py` | Finds a picture for the post, falling back to the SoCo logo |
+| `discord_post.py` | Builds the Discord message and sends it |
 
 To change the time of day, edit the `cron` line in `.github/workflows/soco.yml` (it's in UTC).
 
