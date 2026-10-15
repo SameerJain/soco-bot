@@ -7,9 +7,11 @@ Run by GitHub Actions once a day. It only posts if 2 days have passed since the 
 """
 import html
 import json
+import math
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -39,12 +41,15 @@ SOURCES = [
 
 TECH = r"\b(ai|a\.i\.|artificial intelligence|algorithms?|machine learning|chatbots?|llms?|deepfakes?|data|software|apps?|internet|online|social media|platforms?|tiktok|meta|google|openai|youtube|digital|cyber\w*|hack\w*|encryption|computers?|computing|tech|technology|robots?|automation|facial recognition|smartphones?|streaming|crypto\w*|data centers?)\b"
 SOCIETY = r"\b(privacy|surveillance|rights|civil liberties|law|laws|lawsuit|court|policy|regulat\w+|ban|bans|congress|government|election\w*|democracy|voters?|misinformation|disinformation|censorship|speech|moderation|workers?|labor|jobs|unions?|students?|schools?|education|teachers?|kids|children|teens?|parents|journalis\w+|newsrooms?|news|bias|discrimination|equity|inequality|accessibility|disability|health|climate|energy|police|policing|immigration|ethics|safety|public|communit\w+|society|social|culture|economy)\b"
-SKIP = r"(podcast|^the download|newsletter|\bdeals?\b|\bsale\b|\breview\b|hands-on|\bbest \w+ (for|of)\b|gift guide|sponsored|webinar|this week in|\brecap\b|\bquiz\b|crossword|methodology|acknowledg)"
+SKIP = r"(podcast|^the download|newsletter|\bdeals?\b|\bsale\b|\breview\b|hands-on|\bbest \w+ (for|of)\b|gift guide|sponsored|webinar|this week in|\brecap\b|\bquiz\b|crossword|methodology|acknowledg|effector)"
 
 STATE_FILE = Path(__file__).with_name("posted.json")
 POST_EVERY = timedelta(hours=47)  # 2 days, with slack for cron jitter
 MAX_AGE_DAYS = 7
+BUZZ_CHECK = 25  # how many top stories get a Hacker News + cross-outlet popularity check
 UA = "SoCoBot/1.0 (Discord news bot; +https://github.com/SameerJain/soco-bot)"
+STOPWORDS = set("that this with from what have will about after into over more their they them just says said "
+                "could would when your than then were been here there which while where these those does".split())
 
 
 def clean(text, limit=None):
@@ -103,10 +108,42 @@ def score(entry, source, now, recent_sources):
     return weight * relevance * freshness * variety
 
 
+def url_key(url):
+    return re.sub(r"^https?://(www\.)?", "", norm_url(url or ""))
+
+
+def keywords(title):
+    return {w for w in re.findall(r"[a-z0-9]+", clean(title).lower().replace("'s", "")) if len(w) > 3 and w not in STOPWORDS}
+
+
+def hacker_news(url):
+    """(points, comments, thread url) the story got on Hacker News: a public, free proxy for reader traffic."""
+    try:
+        resp = requests.get("https://hn.algolia.com/api/v1/search", headers={"User-Agent": UA}, timeout=15,
+                            params={"query": url, "restrictSearchableAttributes": "url", "hitsPerPage": 20})
+        resp.raise_for_status()
+        hits = [h for h in resp.json()["hits"] if url_key(h.get("url")) == url_key(url)]
+    except Exception as e:
+        print(f"Hacker News lookup failed for {url}: {e}", file=sys.stderr)
+        return 0, 0, None
+    if not hits:
+        return 0, 0, None
+    best = max(hits, key=lambda h: h.get("points") or 0)
+    return (sum(h.get("points") or 0 for h in hits), sum(h.get("num_comments") or 0 for h in hits),
+            f"https://news.ycombinator.com/item?id={best['objectID']}")
+
+
+def other_outlets(candidate, recent):
+    """Other outlets that ran a story with a similar headline: big stories get covered everywhere."""
+    words = keywords(candidate["entry"].title)
+    return sorted({name for name, entry in recent
+                   if name != candidate["source"] and len(words & keywords(entry.get("title"))) >= 3})
+
+
 def pick(state, now):
     seen = {norm_url(p["url"]) for p in state["posted"]} | {p["title"].lower() for p in state["posted"]}
     recent_sources = [p["source"] for p in state["posted"][-2:]]
-    candidates = []
+    candidates, recent = [], []
     for source in SOURCES:
         try:
             entries = fetch(source[1])
@@ -114,28 +151,47 @@ def pick(state, now):
             print(f"skip {source[0]} ({source[1]}): {e}", file=sys.stderr)
             continue
         for entry in entries:
+            date = published(entry)
+            if date and (now - date).days <= MAX_AGE_DAYS:
+                recent.append((source[0], entry))
             if norm_url(entry.get("link", "")) in seen or clean(entry.get("title")).lower() in seen:
                 continue
             s = score(entry, source, now, recent_sources)
             if s:
-                candidates.append((s, source[0], entry))
-    return sorted(candidates, key=lambda c: c[0], reverse=True)
+                candidates.append({"score": s, "source": source[0], "entry": entry})
+
+    # Re-rank the strongest matches by how much attention they're getting.
+    top = sorted(candidates, key=lambda c: c["score"], reverse=True)[:BUZZ_CHECK]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        hn_results = list(pool.map(lambda c: hacker_news(c["entry"].link), top))
+    for c, (points, comments, thread) in zip(top, hn_results):
+        c["points"], c["comments"], c["thread"] = points, comments, thread
+        c["outlets"] = other_outlets(c, recent)
+        c["score"] *= 1 + min(math.log10(1 + points + comments) / 2.5, 1.2) + 0.15 * min(len(c["outlets"]), 4)
+    return sorted(top, key=lambda c: c["score"], reverse=True)
 
 
-def post(webhook, source, entry):
+def post(webhook, c):
+    entry = c["entry"]
+    fields = [{"name": "Source", "value": c["source"], "inline": True}]
+    if c["points"] or c["comments"]:
+        plural = lambda n, word: f"{n} {word}{'' if n == 1 else 's'}"
+        fields.append({"name": "Hacker News", "inline": True,
+                       "value": f"[🔥 {plural(c['points'], 'point')} · {plural(c['comments'], 'comment')}]({c['thread']})"})
+    if c["outlets"]:
+        fields.append({"name": "Also covered by", "value": ", ".join(c["outlets"]), "inline": True})
     embed = {
         "title": clean(entry.title, 256),
         "url": entry.link,
         "description": clean(entry.get("summary"), 350),
-        "author": {"name": source},
-        "color": 0x5865F2,
+        "fields": fields,
+        "color": 0xD53EA3,  # SoCo logo pink
         "footer": {"text": "SoCo Bot • society × computing"},
         "timestamp": published(entry).isoformat(),
     }
     if image(entry):
         embed["image"] = {"url": image(entry)}
-    payload = {"username": "SoCo Bot", "content": "**SoCo Pick** — new story at the intersection of society and computing",
-               "embeds": [embed], "allowed_mentions": {"parse": []}}
+    payload = {"username": "SoCo Bot", "embeds": [embed]}
     requests.post(webhook, json=payload, timeout=20).raise_for_status()
 
 
@@ -154,12 +210,14 @@ def main():
     if not candidates:
         sys.exit("No candidate stories found.")
     if dry_run:
-        for s, source, e in candidates[:10]:
-            print(f"{s:5.2f}  {source:24.24s}  {clean(e.title)}\n       {e.link}")
+        for c in candidates[:10]:
+            print(f"{c['score']:5.2f}  {c['source']:24.24s}  {clean(c['entry'].title)}\n"
+                  f"       HN {c['points']} pts/{c['comments']} comments, also in: {', '.join(c['outlets']) or '-'}"
+                  f"  {c['entry'].link}")
         return
 
-    _, source, entry = candidates[0]
-    post(os.environ["DISCORD_WEBHOOK_URL"], source, entry)
+    source, entry = candidates[0]["source"], candidates[0]["entry"]
+    post(os.environ["DISCORD_WEBHOOK_URL"], candidates[0])
     state["last_posted_at"] = now.isoformat()
     state["posted"] = (state["posted"] + [{"url": entry.link, "title": clean(entry.title), "source": source,
                                            "posted_at": now.isoformat()}])[-500:]
