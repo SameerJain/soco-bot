@@ -117,7 +117,7 @@ def keywords(title):
 
 
 def hacker_news(url):
-    """(points, comments, thread url) the story got on Hacker News: a public, free proxy for reader traffic."""
+    """(points, comments) the story got on Hacker News: a public, free proxy for reader traffic."""
     try:
         resp = requests.get("https://hn.algolia.com/api/v1/search", headers={"User-Agent": UA}, timeout=15,
                             params={"query": url, "restrictSearchableAttributes": "url", "hitsPerPage": 20})
@@ -125,12 +125,8 @@ def hacker_news(url):
         hits = [h for h in resp.json()["hits"] if url_key(h.get("url")) == url_key(url)]
     except Exception as e:
         print(f"Hacker News lookup failed for {url}: {e}", file=sys.stderr)
-        return 0, 0, None
-    if not hits:
-        return 0, 0, None
-    best = max(hits, key=lambda h: h.get("points") or 0)
-    return (sum(h.get("points") or 0 for h in hits), sum(h.get("num_comments") or 0 for h in hits),
-            f"https://news.ycombinator.com/item?id={best['objectID']}")
+        return 0, 0
+    return sum(h.get("points") or 0 for h in hits), sum(h.get("num_comments") or 0 for h in hits)
 
 
 def other_outlets(candidate, recent):
@@ -164,8 +160,8 @@ def pick(state, now):
     top = sorted(candidates, key=lambda c: c["score"], reverse=True)[:BUZZ_CHECK]
     with ThreadPoolExecutor(max_workers=8) as pool:
         hn_results = list(pool.map(lambda c: hacker_news(c["entry"].link), top))
-    for c, (points, comments, thread) in zip(top, hn_results):
-        c["points"], c["comments"], c["thread"] = points, comments, thread
+    for c, (points, comments) in zip(top, hn_results):
+        c["points"], c["comments"] = points, comments
         c["outlets"] = other_outlets(c, recent)
         c["score"] *= 1 + min(math.log10(1 + points + comments) / 2.5, 1.2) + 0.15 * min(len(c["outlets"]), 4)
     return sorted(top, key=lambda c: c["score"], reverse=True)
@@ -174,10 +170,6 @@ def pick(state, now):
 def post(webhook, c):
     entry = c["entry"]
     fields = [{"name": "Source", "value": c["source"], "inline": True}]
-    if c["points"] or c["comments"]:
-        plural = lambda n, word: f"{n} {word}{'' if n == 1 else 's'}"
-        fields.append({"name": "Hacker News", "inline": True,
-                       "value": f"[🔥 {plural(c['points'], 'point')} · {plural(c['comments'], 'comment')}]({c['thread']})"})
     if c["outlets"]:
         fields.append({"name": "Also covered by", "value": ", ".join(c["outlets"]), "inline": True})
     embed = {
