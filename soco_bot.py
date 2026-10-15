@@ -44,7 +44,7 @@ SOCIETY = r"\b(privacy|surveillance|rights|civil liberties|law|laws|lawsuit|cour
 SKIP = r"(podcast|^the download|newsletter|\bdeals?\b|\bsale\b|\breview\b|hands-on|\bbest \w+ (for|of)\b|gift guide|sponsored|webinar|this week in|\brecap\b|\bquiz\b|crossword|methodology|acknowledg|effector)"
 
 STATE_FILE = Path(__file__).with_name("posted.json")
-POST_EVERY = timedelta(hours=47)  # 2 days, with slack for cron jitter
+POST_EVERY = timedelta(hours=36)  # daily runs + 36h = every other day, with 12h slack for late runs
 MAX_AGE_DAYS = 7
 BUZZ_CHECK = 25  # how many top stories get a Hacker News + cross-outlet popularity check
 UA = "SoCoBot/1.0 (Discord news bot; +https://github.com/SameerJain/soco-bot)"
