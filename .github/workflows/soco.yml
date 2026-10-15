@@ -12,7 +12,7 @@ on:
         default: dry-run
 
 permissions:
-  contents: write  # to commit posted.json
+  contents: write  # to commit posted.json to the bot-state branch
 
 concurrency: soco-bot
 
@@ -21,6 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The posted history lives on its own branch so the bot never commits to main.
+      - uses: actions/checkout@v4
+        with:
+          ref: bot-state
+          path: state
+      - run: cp state/posted.json posted.json
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -30,7 +36,9 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       - name: Save posted history
+        working-directory: state
         run: |
+          cp ../posted.json posted.json
           git config user.name "soco-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add posted.json

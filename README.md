@@ -11,7 +11,7 @@ Free to run: it uses GitHub Actions (no server) and a Discord webhook (no bot ho
 3. General outlets only count if a story hits **both** a tech keyword and a society keyword. Focused outlets (The Markup, EFF, and others) always count.
 4. Scores each story by source quality × relevance × freshness, and penalizes the sources used in the last 2 posts so the picks stay varied.
 5. Boosts the top 25 by how much attention they're getting. News sites don't publish traffic numbers, so the bot uses two public stand-ins: the story's points and comments on Hacker News, and how many other outlets in the list are running the same story.
-6. Posts the highest-scoring story, then records it in `posted.json` so it's never posted twice.
+6. Posts the highest-scoring story, then records it in `posted.json` so it's never posted twice. That file lives on the `bot-state` branch, so the bot never commits to `main` and your pushes don't conflict with it.
 
 The workflow runs daily, but the bot only posts if 2 days have passed since the last post. So it posts every 2 days no matter how busy or quiet the news cycle is.
 
