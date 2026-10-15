@@ -129,15 +129,22 @@ def hacker_news(url):
     return sum(h.get("points") or 0 for h in hits), sum(h.get("num_comments") or 0 for h in hits)
 
 
+def same_story(title_a, title_b):
+    """Headlines sharing 3+ keywords are treated as the same story from different outlets."""
+    return len(keywords(title_a) & keywords(title_b)) >= 3
+
+
 def other_outlets(candidate, recent):
     """Other outlets that ran a story with a similar headline: big stories get covered everywhere."""
-    words = keywords(candidate["entry"].title)
     return sorted({name for name, entry in recent
-                   if name != candidate["source"] and len(words & keywords(entry.get("title"))) >= 3})
+                   if name != candidate["source"] and same_story(candidate["entry"].title, entry.get("title"))})
 
 
 def pick(state, now):
     seen = {norm_url(p["url"]) for p in state["posted"]} | {p["title"].lower() for p in state["posted"]}
+    # Don't post another outlet's version of a story we already posted.
+    covered = [p["title"] for p in state["posted"]
+               if now - datetime.fromisoformat(p["posted_at"]) <= timedelta(days=2 * MAX_AGE_DAYS)]
     recent_sources = [p["source"] for p in state["posted"][-2:]]
     candidates, recent = [], []
     for source in SOURCES:
@@ -151,6 +158,8 @@ def pick(state, now):
             if date and (now - date).days <= MAX_AGE_DAYS:
                 recent.append((source[0], entry))
             if norm_url(entry.get("link", "")) in seen or clean(entry.get("title")).lower() in seen:
+                continue
+            if any(same_story(entry.get("title"), title) for title in covered):
                 continue
             s = score(entry, source, now, recent_sources)
             if s:
